@@ -1,0 +1,15 @@
+body{
+  background-color:#1A1B1F;
+}
+#container{
+  max-width:800px;
+  height:480px;
+  background-color:black;
+  margin: 0 auto;
+  -webkit-box-sizing::border-box;
+}
+
+#container p{
+  color:white;
+  margin-left:25px;
+}

@@ -1,0 +1,310 @@
+//linearly interpolate betwen a->b by a coefficient
+const lerp = (first, second, percentage) => {
+  return first + (second - first) * percentage;
+};
+
+//used for all vector operations
+class Vector2 {
+  static zero() {
+    return new Vector2(0, 0);
+  }
+
+  static sub(a, b) {
+    return new Vector2(a.x - b.x, a.y - b.y);
+  }
+
+  static add(a, b) {
+    return new Vector2(a.x + b.x, a.y + b.y);
+  }
+
+  static mult(a, b) {
+    return new Vector2(a.x * b.x, a.y * b.y);
+  }
+
+  static scale(v, scaleFactor) {
+    return new Vector2(v.x * scaleFactor, v.y * scaleFactor);
+  }
+
+  static mag(v) {
+    return Math.sqrt(v.x * v.x + v.y * v.y);
+  }
+
+  static normalized(v) {
+    const mag = Vector2.mag(v);
+
+    if (mag === 0) {
+      return Vector2.zero();
+    }
+    return new Vector2(v.x / mag, v.y / mag);
+  }
+
+  constructor(x = 0, y = 0) {
+    this.x = x;
+    this.y = y;
+    this.clone = this.clone.bind(this);
+  }
+
+  clone() {
+    return new Vector2(this.x, this.y);
+  }
+}
+
+//each rope part is one of these
+//uses a high precison varient of Störmer–Verlet integration
+//to keep the simulation consistant otherwise it would "explode"!
+class RopePoint {
+  constructor(initialPos, distanceToNextPoint) {
+    this.pos = initialPos;
+    this.distanceToNextPoint = distanceToNextPoint;
+    this.isFixed = false;
+    this.oldPos = initialPos.clone();
+    this.velocity = Vector2.zero();
+    this.mass = 1.0;
+    this.damping = 1.0;
+    this.prev = null;
+    this.next = null;
+
+    this.integrate = this.integrate.bind(this);
+    this.applyConstrains = this.applyConstrains.bind(this);
+  }
+
+  //integrates motion equations per node without taking into account relationship
+  //with other nodes...
+  integrate(gravity, dt, previousFrameDt) {
+    if (!this.isFixed) {
+      this.velocity = Vector2.sub(this.pos, this.oldPos);
+      this.oldPos = this.pos.clone();
+
+      //drastically improves stability
+      let timeCorrection = previousFrameDt != 0.0 ? dt / previousFrameDt : 0.0;
+
+      let accel = Vector2.add(gravity, new Vector2(0, this.mass));
+
+      this.pos.x =
+        this.pos.x +
+        this.velocity.x * timeCorrection * this.damping +
+        accel.x * Math.pow(dt, 2);
+
+      this.pos.y =
+        this.pos.y +
+        this.velocity.y * timeCorrection * this.damping +
+        accel.y * Math.pow(dt, 2);
+    } else {
+      this.velocity = Vector2.zero();
+      this.oldPos = this.pos.clone();
+    }
+  }
+
+  //apply constraints related to other nodes next to it
+  //(keeps each node within distance)
+  applyConstrains() {
+    if (this.next) {
+      const delta = Vector2.sub(this.next.pos, this.pos);
+      const len = Vector2.mag(delta);
+      const diff = len - this.distanceToNextPoint;
+      const normal = Vector2.normalized(delta);
+
+      if (!this.isFixed) {
+        this.pos.x += normal.x * diff * 0.25;
+        this.pos.y += normal.y * diff * 0.25;
+      }
+
+      if (!this.next.isFixed) {
+        this.next.pos.x -= normal.x * diff * 0.25;
+        this.next.pos.y -= normal.y * diff * 0.25;
+      }
+    }
+    if (this.prev) {
+      const delta = Vector2.sub(this.prev.pos, this.pos);
+      const len = Vector2.mag(delta);
+      const diff = len - this.distanceToNextPoint;
+      const normal = Vector2.normalized(delta);
+
+      if (!this.isFixed) {
+        this.pos.x += normal.x * diff * 0.25;
+        this.pos.y += normal.y * diff * 0.25;
+      }
+
+      if (!this.prev.isFixed) {
+        this.prev.pos.x -= normal.x * diff * 0.25;
+        this.prev.pos.y -= normal.y * diff * 0.25;
+      }
+    }
+  }
+}
+
+//manages a collection of rope points and executes
+//the integration
+class Rope {
+  //generate an array of points suitable for a dynamic
+  //rope contour
+  static generate(start, end, resolution, mass, damping) {
+    const delta = Vector2.sub(end, start);
+    const len = Vector2.mag(delta);
+
+    let points = [];
+    const pointsLen = len / resolution;
+
+    for (let i = 0; i < pointsLen; i++) {
+      const percentage = i / (pointsLen - 1);
+
+      const lerpX = lerp(start.x, end.x, percentage);
+      const lerpY = lerp(start.y, end.y, percentage);
+
+      points[i] = new RopePoint(new Vector2(lerpX, lerpY), resolution);
+      points[i].mass = mass;
+      points[i].damping = damping;
+    }
+
+    //Link nodes into a doubly linked list
+    for (let i = 0; i < pointsLen; i++) {
+      const prev = i != 0 ? points[i - 1] : null;
+      const curr = points[i];
+      const next = i != pointsLen - 1 ? points[i + 1] : null;
+
+      curr.prev = prev;
+      curr.next = next;
+    }
+
+    points[0].isFixed = points[points.length - 1].isFixed = true;
+
+    return points;
+  }
+
+  constructor(points, solverIterations) {
+    this._points = points;
+    this.update = this.update.bind(this);
+    this._prevDelta = 0;
+    this._solverIterations = solverIterations;
+
+    this.getPoint = this.getPoint.bind(this);
+  }
+
+  getPoint(index) {
+    return this._points[index];
+  }
+
+  update(gravity, dt) {
+    for (let i = 0; i < this._points.length; i++) {
+      let point = this._points[i];
+
+      let accel = Vector2.zero();
+
+      if (!point.isFixed) {
+        accel = gravity.clone();
+      }
+      point.integrate(accel, dt, this._prevDelta);
+    }
+
+    for (let iteration = 0; iteration < this._solverIterations; iteration++)
+      for (let i = 0; i < this._points.length; i++) {
+        let point = this._points[i];
+        if (!point.isFixed) {
+          point.applyConstrains();
+        }
+      }
+
+    this._prevDelta = dt;
+  }
+}
+
+//APP SETUP!
+
+const canvas = document.getElementById("canvas");
+const context = canvas.getContext("2d");
+
+const args = {
+  start: { x: 100, y: canvas.height / 2 },
+  end: { x: canvas.width - 100, y: canvas.height / 2 },
+  resolution: 8,
+  mass: 1,
+  damping: 0.8,
+  gravity: new Vector2(0, 3000),
+  solverIterations: 600,
+  ropeColour: "#ffffffff"
+};
+
+const points = Rope.generate(
+  args.start,
+  args.end,
+  args.resolution,
+  args.mass,
+  args.damping
+);
+
+let rope = new Rope(points, args.solverIterations);
+
+const onClick = e => {
+  var element = canvas;
+  var offsetX = 0,
+    offsetY = 0;
+
+  if (element.offsetParent) {
+    do {
+      offsetX += element.offsetLeft;
+      offsetY += element.offsetTop;
+    } while ((element = element.offsetParent));
+  }
+
+  x = e.pageX - offsetX;
+  y = e.pageY - offsetY;
+
+  let point = rope.getPoint(0);
+  point.pos.x = x;
+  point.pos.y = y;
+};
+
+//render a rope using the verlet points
+const draw = () => {
+  for (i = 0; i < points.length; i++) {
+    let p = points[i];
+
+    const prev = i > 0 ? points[i - 1] : null;
+
+    if (prev) {
+      context.beginPath();
+      context.moveTo(prev.pos.x, prev.pos.y);
+      context.lineTo(p.pos.x, p.pos.y);
+      context.lineWidth = 4;
+      context.strokeStyle = args.ropeColour;
+      context.stroke();
+    }
+  }
+};
+
+const tick = dt => {
+  rope.update(args.gravity, dt);
+
+  //lower alphg = more blur!
+  context.fillStyle = "#00000044";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  draw();
+};
+
+//basic js game loop with stability control
+const initGameLoop = (ticker, interval) => {
+  let lastTime = new Date().getTime();
+  let currentTime = 0;
+  let delta = 0;
+
+  function gameLoop() {
+    window.requestAnimationFrame(gameLoop);
+
+    currentTime = new Date().getTime();
+    delta = currentTime - lastTime;
+
+    if (delta > interval) {
+      const dt = delta * 0.001;
+
+      ticker(dt);
+
+      lastTime = currentTime - delta % interval;
+    }
+  }
+  gameLoop();
+};
+
+const frameRate = 1000 / 60; //60fps
+initGameLoop(tick, frameRate);
+canvas.addEventListener("mousemove", onClick, false);
