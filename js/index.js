@@ -1,3 +1,5 @@
+import {Vector2, App} from "./microlib";
+
 //each rope part is one of these
 //uses a high precison varient of Störmer–Verlet integration
 //to keep the simulation consistant otherwise it would "explode"!
