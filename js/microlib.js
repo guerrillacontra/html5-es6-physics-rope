@@ -136,7 +136,3 @@ class App {
   }
 }
 
-export {
-Vector2,
-App
-}
